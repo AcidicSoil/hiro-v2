@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
+import { motion as Motion } from "framer-motion";
 import { Check, Play, Loader2, X } from "lucide-react";
 
 // --- Minimal UI primitives ---
@@ -143,20 +143,25 @@ function ChatPreview({ system, provider, model }) {
   const [busy, setBusy] = useState(false);
   const ctrlRef = React.useRef(null);
 
-  async function send() {
-    const text = input.trim();
+  async function send(textOverride, historyOverride) {
+    const text = (textOverride ?? input).trim();
     if (!text || busy) return;
-    setInput('');
-    const next = [...messages, { role: 'user', content: text }, { role: 'assistant', content: '' }];
+    if(!historyOverride) setInput('');
+    const base = historyOverride || messages;
+    const next = [...base, { role: 'user', content: text }, { role: 'assistant', content: '' }];
     setMessages(next);
     setBusy(true);
     const idx = next.length - 1;
 
     try {
       const ctrl = new AbortController(); ctrlRef.current = ctrl;
-      const res = await fetch('/api/chat', {
+      const body = provider === 'ollama'
+        ? { model, stream: true, messages: next.filter((_, i) => i !== idx) }
+        : { messages: next.filter((_, i) => i !== idx), system, provider, model };
+      const url = provider === 'ollama' ? 'http://127.0.0.1:11434/api/chat' : '/api/chat';
+      const res = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.filter((_, i) => i !== idx), system, provider, model }),
+        body: JSON.stringify(body),
         signal: ctrl.signal
       });
       if (!res.ok || !res.body) throw new Error('bad response');
@@ -179,6 +184,16 @@ function ChatPreview({ system, provider, model }) {
     } finally { setBusy(false); }
   }
 
+  function regenerate(){
+    if(busy) return;
+    let uIdx = -1;
+    for(let i = messages.length - 1; i >= 0; i--){ if(messages[i].role === 'user'){ uIdx = i; break; } }
+    if(uIdx === -1) return;
+    const history = messages.slice(0, uIdx);
+    const text = messages[uIdx].content;
+    send(text, history);
+  }
+
   function stop() { if (ctrlRef.current) ctrlRef.current.abort(); }
   function clear() { setMessages([{ role: 'assistant', content: 'Chat reset.' }]); }
 
@@ -191,12 +206,13 @@ function ChatPreview({ system, provider, model }) {
       </div>
       <div className="flex gap-2">
         <input className="flex-1 rounded-xl border p-2 text-sm" placeholder="Message" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') send(); }} />
-        <Button onClick={send} className="bg-black text-white">Send</Button>
+        <Button onClick={()=>send()} className="bg-black text-white">Send</Button>
+        <Button onClick={regenerate}>Regen</Button>
         <Button onClick={stop}>Stop</Button>
         <Button onClick={clear}>Clear</Button>
       </div>
       <div className="text-xs text-gray-500">
-        POST <code>/api/chat</code> with <code>{'{ messages, system, provider, model }'}</code>.
+        POST <code>{provider === 'ollama' ? 'http://127.0.0.1:11434/api/chat' : '/api/chat'}</code> with <code>{'{ messages, system, provider, model }'}</code>.
         Streams lines either as SSE <code>data: {`{"text":"..."}`}</code> or raw JSON; both supported.
       </div>
     </div>
@@ -259,6 +275,22 @@ export default function App() {
   // Provider + model
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('gpt-4o-mini');
+  const [ollamaModels, setOllamaModels] = useState([]);
+
+  const refreshOllamaModels = useCallback(async () => {
+    try{
+      const res = await fetch('http://127.0.0.1:11434/api/tags');
+      if(!res.ok) return;
+      const data = await res.json();
+      const names = data?.models?.map(m=>m.name) || [];
+      setOllamaModels(names);
+      if(names.length && !names.includes(model)) setModel(names[0]);
+    }catch { /* empty */ }
+  }, [model]);
+
+  useEffect(() => {
+    if(provider === 'ollama') refreshOllamaModels();
+  }, [provider, refreshOllamaModels]);
 
   // Six-section state
   const [role, setRole] = useState("");
@@ -334,11 +366,34 @@ export default function App() {
     if(info.role.includes('Frontend')){
       setOutputSpec(`- Component spec — states and props\n\n\`\`\`md\n| State | Inputs | Expected |\n|---|---|---|\n| default | none | renders |\n\n\`\`\`\n\n*Usage/validation:* run storybook and a11y checks`);
     } else if(info.role.includes('DevOps')){
-      setOutputSpec(`- Terraform module — provision core infra\n\n\`\`\`hcl\nterraform { required_providers { aws = { source = \"hashicorp/aws\" } } }\n\n\`\`\`\n\n*Usage/validation:* terraform plan && policy checks`);
+      setOutputSpec(`- Terraform module — provision core infra\n\n\`\`\`hcl\nterraform { required_providers { aws = { source = "hashicorp/aws" } } }\n\n\`\`\`\n\n*Usage/validation:* terraform plan && policy checks`);
     } else {
       setOutputSpec(`- OpenAPI — API contract\n\n\`\`\`yaml\nopenapi: 3.1.0\ninfo: { title: sample, version: 0.1.0 }\n\n\`\`\`\n\n*Usage/validation:* run contract tests in CI`);
     }
     setStop(["- One compilable artifact + quickstart","- Contract/tests pass locally and in CI"].join('\n'));
+  }
+
+  async function suggestOptionals(){
+    const prompt = 'Suggest a short "needs" statement and tech stack. Return JSON {"needs":"...","techStack":"..."}.';
+    try{
+      const url = provider === 'ollama' ? 'http://127.0.0.1:11434/api/chat' : '/api/chat';
+      const body = provider === 'ollama'
+        ? { model, stream: true, messages: [ { role: 'user', content: prompt } ] }
+        : { provider, model, stream: true, messages: [ { role: 'user', content: prompt } ] };
+      const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if(!res.body) return;
+      const reader = res.body.getReader(); const dec = new TextDecoder();
+      let buf='', out='';
+      while(true){
+        const {value, done} = await reader.read(); if(done) break;
+        buf += dec.decode(value,{stream:true});
+        const lines = buf.split(/\r?\n/); buf = lines.pop() || '';
+        for(const line of lines){ const tok = parseSSEorJSONLine(line); if(tok!=null) out += String(tok); }
+      }
+      const j = JSON.parse(out);
+      if(j.needs) setNeeds(j.needs);
+      if(j.techStack) setTechStack(j.techStack);
+    }catch { /* empty */ }
   }
 
   // --- Inline self-tests ---
@@ -375,15 +430,24 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-5xl mx-auto space-y-4">
-        <motion.h1 initial={{opacity:0,y:-6}} animate={{opacity:1,y:0}} className="text-2xl font-bold">Universal 6-Section Dev Prompt Builder (Hiro v2) — with inference</motion.h1>
+        <Motion.h1 initial={{opacity:0,y:-6}} animate={{opacity:1,y:0}} className="text-2xl font-bold">Universal 6-Section Dev Prompt Builder (Hiro v2) — with inference</Motion.h1>
 
         <Section title="Provider & model">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-            <select className="rounded-xl border p-2 text-sm" value={provider} onChange={e=>{ const p = e.target.value; setProvider(p); setModel(p==='ollama' ? 'llama3' : 'gpt-4o-mini'); }}>
+            <select className="rounded-xl border p-2 text-sm" value={provider} onChange={e=>{ const p = e.target.value; setProvider(p); setModel(p==='ollama' ? (ollamaModels[0]||'llama3') : 'gpt-4o-mini'); }}>
               <option value="openai">openai</option>
               <option value="ollama">ollama (local)</option>
             </select>
-            <input className="rounded-xl border p-2 text-sm" placeholder={provider==='ollama' ? 'llama3|qwen2.5:7b|phi3' : 'gpt-4o-mini'} value={model} onChange={e=>setModel(e.target.value)} />
+            {provider === 'ollama' ? (
+              <div className="flex gap-2">
+                <select className="rounded-xl border p-2 text-sm flex-1" value={model} onChange={e=>setModel(e.target.value)}>
+                  {ollamaModels.map(m=> <option key={m} value={m}>{m}</option>)}
+                </select>
+                <Button onClick={refreshOllamaModels}>↻</Button>
+              </div>
+            ) : (
+              <input className="rounded-xl border p-2 text-sm" placeholder="gpt-4o-mini" value={model} onChange={e=>setModel(e.target.value)} />
+            )}
             <div className="text-xs text-gray-500 flex items-center">Body includes <code>{'{ provider, model }'}</code></div>
           </div>
         </Section>
@@ -393,8 +457,9 @@ export default function App() {
             <TextArea placeholder="Describe your needs, goals, or problem. Example: 'Build a public REST API for orders with auth and metrics'" value={needs} onChange={e=>setNeeds(e.target.value)} />
             <TextArea placeholder="Tech stack (optional). Example: 'TypeScript, Node.js, Fastify, Postgres, Docker'" value={techStack} onChange={e=>setTechStack(e.target.value)} />
           </div>
-          <div className="pt-2">
+          <div className="pt-2 flex gap-2">
             <Button onClick={inferFromInputs} className="bg-black text-white">Infer fields</Button>
+            <Button onClick={suggestOptionals}>Suggest</Button>
           </div>
         </Section>
 

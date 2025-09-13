@@ -2,10 +2,13 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-Currently, two official plugins are available:
+## Local models
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+The demo UI can talk directly to [Ollama](https://ollama.com/). Choose **ollama** as the provider to load available models from `http://127.0.0.1:11434` and chat with them. A small refresh button next to the model drop-down reloads the list.
+
+## Chat suggestions
+
+The "Inputs for inference" section includes a **Suggest** button. It asks the currently selected model to propose sample *needs* and *tech stack* values in JSON and fills the fields automatically. The chat preview also has a **Regen** button to regenerate the last response.
 
 ## Expanding the ESLint configuration
 

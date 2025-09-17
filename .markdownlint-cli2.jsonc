@@ -1,0 +1,10 @@
+{
+  // Ignore patterns for markdownlint-cli2
+  "ignores": ["node_modules/**", "dist/**", "build/**"],
+
+  // You can also include rule configuration here
+  "config": {
+    "default": true,
+    "MD013": false // Disable line length rule
+  }
+}
